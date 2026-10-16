@@ -1,0 +1,17 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.cache/
+*.tmp
+*.tar.gz
+
+# Environments & IDEs
+.venv/
+venv/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
