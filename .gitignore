@@ -6,6 +6,12 @@ __pycache__/
 *.tmp
 *.tar.gz
 
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
 # Environments & IDEs
 .venv/
 venv/

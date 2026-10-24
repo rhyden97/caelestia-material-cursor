@@ -1,99 +1,122 @@
 #!/usr/bin/env bash
 # install.sh — Automated installer for caelestia-material-cursor
-
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ICONS_DIR="$HOME/.icons"
 DATA_ICONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/caelestia"
 CLI_CONF="$CONFIG_DIR/cli.json"
-PLUGINS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/caelestia/plugins"
-PLUGIN_TARGET="$PLUGINS_DIR/caelestia-material-cursor"
+THEME_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/caelestia/cursor-themes"
+
+AUTO_YES=0
+RUN_OPTIMIZE=0
+
+usage() {
+    cat <<'EOF'
+Usage: ./install.sh [OPTIONS]
+
+Options:
+  -y, --yes       Accept the recommended cursor size (non-interactive)
+  --optimize      Strip unused cursor raster sizes after installing
+                  (reversible: the release archives stay in the cache)
+  -h, --help      Show this help
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -y|--yes) AUTO_YES=1 ;;
+        --optimize) RUN_OPTIMIZE=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
+    esac
+    shift
+done
 
 echo "=========================================================="
 echo "    Caelestia Material Cursor Sync Installer"
 echo "=========================================================="
 
-# 0. Check system dependencies
+# 0. Dependencies -----------------------------------------------------------
 echo "-> Checking dependencies..."
 
-if ! command -v python3 &>/dev/null; then
-    echo "❌ Error: python3 is not installed. Please install Python 3." >&2
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "Error: python3 is not installed. Please install Python 3." >&2
     exit 1
 fi
 
 if ! python3 -c "import PIL" 2>/dev/null; then
-    echo "⚠️  Pillow (PIL) is not installed in your Python environment."
-    echo "   Attempting to install via pip: pip install -r '$SCRIPT_DIR/requirements.txt'..."
-    if command -v pip3 &>/dev/null || command -v pip &>/dev/null; then
-        pip install -r "$SCRIPT_DIR/requirements.txt" || pip3 install -r "$SCRIPT_DIR/requirements.txt" || {
-            echo "❌ Failed to install Pillow via pip."
-            echo "   Please install it using your system package manager:"
-            echo "     Arch/CachyOS: sudo pacman -S python-pillow"
-            echo "     Debian/Ubuntu: sudo apt install python3-pil"
-            echo "     Fedora:        sudo dnf install python3-pillow"
+    echo "Warning: Pillow (PIL) is not installed in this Python environment."
+    echo "         Attempting to install it for the current user..."
+    if command -v pip3 >/dev/null 2>&1 || command -v pip >/dev/null 2>&1; then
+        PIP_BIN="$(command -v pip3 || command -v pip)"
+        if ! "$PIP_BIN" install --user -r "$SCRIPT_DIR/requirements.txt"; then
+            echo "Error: could not install Pillow. Use your package manager:" >&2
+            echo "  Arch/CachyOS: sudo pacman -S python-pillow" >&2
+            echo "  Debian/Ubuntu: sudo apt install python3-pil" >&2
+            echo "  Fedora: sudo dnf install python3-pillow" >&2
             exit 1
-        }
+        fi
     else
-        echo "❌ pip is not available. Please install python-pillow using your package manager:"
-        echo "     Arch/CachyOS: sudo pacman -S python-pillow"
-        echo "     Debian/Ubuntu: sudo apt install python3-pil"
-        echo "     Fedora:        sudo dnf install python3-pillow"
+        echo "Error: pip is not available. Install python-pillow with your package manager." >&2
         exit 1
     fi
 fi
 
 DOWNLOADER=""
-if command -v curl &>/dev/null; then
+if command -v curl >/dev/null 2>&1; then
     DOWNLOADER="curl"
-elif command -v wget &>/dev/null; then
+elif command -v wget >/dev/null 2>&1; then
     DOWNLOADER="wget"
 else
-    echo "❌ Error: Neither 'curl' nor 'wget' was found. Please install curl or wget." >&2
+    echo "Error: neither curl nor wget was found. Please install one of them." >&2
     exit 1
 fi
 
-if ! command -v tar &>/dev/null; then
-    echo "❌ Error: 'tar' is required to extract theme packages." >&2
+if ! command -v tar >/dev/null 2>&1; then
+    echo "Error: tar is required to extract theme packages." >&2
     exit 1
 fi
 
-echo "   ✓ Dependencies satisfied (Python 3, Pillow, $DOWNLOADER, tar)."
+echo "   Dependencies satisfied (Python 3, Pillow, $DOWNLOADER, tar)."
 
-chmod +x "$SCRIPT_DIR/cursor_sync.py" "$SCRIPT_DIR/color_match.py"
+chmod +x "$SCRIPT_DIR/cursor_sync.py" "$SCRIPT_DIR/color_match.py" "$SCRIPT_DIR/fsutil.py"
+mkdir -p "$ICONS_DIR" "$DATA_ICONS_DIR" "$CONFIG_DIR" "$THEME_CACHE_DIR"
 
-mkdir -p "$ICONS_DIR"
-mkdir -p "$DATA_ICONS_DIR"
-mkdir -p "$CONFIG_DIR"
-mkdir -p "$PLUGINS_DIR"
-mkdir -p "$SCRIPT_DIR/assets"
+# 1. Display detection ------------------------------------------------------
+echo "-> Detecting monitor resolution and optimal cursor size..."
+DETECT_JSON="$(python3 "$SCRIPT_DIR/cursor_sync.py" --detect-size 2>/dev/null || echo '{}')"
 
-# 1. Detect monitor resolution and determine optimal cursor size
-echo "-> Detecting monitor resolution & optimal cursor size..."
-DETECT_JSON=$(python3 "$SCRIPT_DIR/cursor_sync.py" --detect-size 2>/dev/null || echo "{}")
+read -r REC_SIZE MON_NAME MON_WIDTH MON_HEIGHT MON_SCALE < <(
+    python3 - "$DETECT_JSON" <<'PY'
+import json
+import sys
 
-REC_SIZE=$(echo "$DETECT_JSON" | grep -o '"recommended_size": [0-9]*' | awk '{print $2}')
-[ -z "$REC_SIZE" ] && REC_SIZE=24
+data = json.loads(sys.argv[1] or "{}")
+print(
+    data.get("recommended_size", 24),
+    data.get("name", "default"),
+    data.get("width", 1920),
+    data.get("height", 1080),
+    data.get("scale", 1.0),
+)
+PY
+)
 
-MON_NAME=$(echo "$DETECT_JSON" | grep -o '"name": "[^"]*"' | cut -d'"' -f4)
-MON_WIDTH=$(echo "$DETECT_JSON" | grep -o '"width": [0-9]*' | awk '{print $2}')
-MON_HEIGHT=$(echo "$DETECT_JSON" | grep -o '"height": [0-9]*' | awk '{print $2}')
-MON_SCALE=$(echo "$DETECT_JSON" | grep -o '"scale": [0-9.]*' | awk '{print $2}')
-
-echo "   * Primary monitor: ${MON_NAME:-default} (${MON_WIDTH:-1920}x${MON_HEIGHT:-1080} @ ${MON_SCALE:-1.0}x)"
-echo "   * Suggested cursor size: ${REC_SIZE}px"
+echo "   Primary monitor: ${MON_NAME} (${MON_WIDTH}x${MON_HEIGHT} @ ${MON_SCALE}x)"
+echo "   Suggested cursor size: ${REC_SIZE}px"
 
 CHOSEN_SIZE="$REC_SIZE"
-if [ -t 0 ] && [ "$1" != "-y" ] && [ "$1" != "--yes" ]; then
+if [ "$AUTO_YES" -eq 0 ] && [ -t 0 ]; then
     echo ""
-    echo "   Suggested Cursor Sizes for your resolution:"
+    echo "   Suggested cursor sizes for your display:"
     echo "     1) 24px (Standard, crisp on 1080p or scaled HiDPI)"
     echo "     2) 28px (Slightly larger, high visibility)"
     echo "     3) 32px (Large, high accessibility)"
     echo "     4) 48px (Extra large / unscaled 4K)"
     echo ""
-    read -r -p "   Select size [1-4 or enter custom size, default: ${REC_SIZE}px]: " USER_IN
+    read -r -p "   Select size [1-4 or custom size, default: ${REC_SIZE}px]: " USER_IN || USER_IN=""
     case "$USER_IN" in
         1) CHOSEN_SIZE=24 ;;
         2) CHOSEN_SIZE=28 ;;
@@ -104,148 +127,170 @@ if [ -t 0 ] && [ "$1" != "-y" ] && [ "$1" != "--yes" ]; then
             if [[ "$USER_IN" =~ ^[0-9]+$ ]] && [ "$USER_IN" -ge 16 ] && [ "$USER_IN" -le 96 ]; then
                 CHOSEN_SIZE="$USER_IN"
             else
-                echo "   ! Invalid selection, using recommended ${REC_SIZE}px."
+                echo "   Invalid selection, using recommended ${REC_SIZE}px."
                 CHOSEN_SIZE="$REC_SIZE"
             fi
             ;;
     esac
 fi
 
-echo "   ✓ Selected cursor size: ${CHOSEN_SIZE}px"
+echo "   Selected cursor size: ${CHOSEN_SIZE}px"
 
-# 2. Check and unpack themes
+# 2. Theme packages ---------------------------------------------------------
 echo "-> Checking cursor theme packages..."
 
-FOUND_THEMES=$(find "$ICONS_DIR" -maxdepth 1 -name "Bibata-Material-*" 2>/dev/null | wc -l)
+fetch_archive() {
+    local url="$1"
+    local destination="$2"
 
-if [ "$FOUND_THEMES" -lt 10 ]; then
-    echo "-> Setting up Bibata-Material theme packages (v1.3.0)..."
-    TMP_DIR=$(mktemp -d)
-    DARK_URL="https://github.com/SakibShahariar/material-bibata-cursor/releases/download/v1.3.0/bibata-material-dark-v1.3.0.tar.gz"
-    LIGHT_URL="https://github.com/SakibShahariar/material-bibata-cursor/releases/download/v1.3.0/bibata-material-light-v1.3.0.tar.gz"
+    if [ -s "$destination" ]; then
+        echo "   Using cached archive: $(basename "$destination")"
+        return 0
+    fi
 
-    LOCAL_DARK=$(find "$SCRIPT_DIR" -maxdepth 1 -name "*bibata-material-dark*.tar.gz" 2>/dev/null | head -n 1)
-    LOCAL_LIGHT=$(find "$SCRIPT_DIR" -maxdepth 1 -name "*bibata-material-light*.tar.gz" 2>/dev/null | head -n 1)
-
-    if [ -n "$LOCAL_DARK" ] && [ -f "$LOCAL_DARK" ]; then
-        echo "   * Using local dark theme archive: $(basename "$LOCAL_DARK")"
-        cp "$LOCAL_DARK" "$TMP_DIR/dark.tar.gz"
+    if [ "$DOWNLOADER" = "curl" ]; then
+        curl -fL --progress-bar -o "$destination.part" "$url" || { rm -f "$destination.part"; return 1; }
     else
-        echo "   * Downloading Bibata-Material Dark theme pack (v1.3.0)..."
-        if [ "$DOWNLOADER" = "curl" ]; then
-            curl -fL --progress-bar -o "$TMP_DIR/dark.tar.gz" "$DARK_URL" || true
-        else
-            wget -q --show-progress -O "$TMP_DIR/dark.tar.gz" "$DARK_URL" || true
+        wget -q --show-progress -O "$destination.part" "$url" || { rm -f "$destination.part"; return 1; }
+    fi
+    mv "$destination.part" "$destination"
+}
+
+record_checksum() {
+    local archive="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$archive" | awk '{print $1}' > "$archive.sha256"
+    fi
+}
+
+install_archive() {
+    local archive="$1"
+    local temp_dir
+    temp_dir="$(mktemp -d)"
+    if ! tar -xzf "$archive" -C "$temp_dir"; then
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    while IFS= read -r -d '' theme_dir; do
+        local name
+        name="$(basename "$theme_dir")"
+        if [ ! -d "$ICONS_DIR/$name" ]; then
+            cp -a "$theme_dir" "$ICONS_DIR/$name"
         fi
-    fi
+    done < <(find "$temp_dir" -maxdepth 4 -type d -name 'Bibata-Material-*' -print0)
 
-    if [ -f "$TMP_DIR/dark.tar.gz" ] && [ -s "$TMP_DIR/dark.tar.gz" ]; then
-        tar -xzf "$TMP_DIR/dark.tar.gz" -C "$TMP_DIR"
-        cp -rn "$TMP_DIR"/bibata-material-dark-*/Bibata-Material-* "$ICONS_DIR/" 2>/dev/null || true
-        cp -rn "$TMP_DIR"/bibata-material-dark-*/Bibata-Material-* "$DATA_ICONS_DIR/" 2>/dev/null || true
-    else
-        echo "⚠️  Failed to acquire dark theme pack. Check internet connection or download manually from:"
-        echo "   $DARK_URL"
-    fi
+    rm -rf "$temp_dir"
+}
 
-    if [ -n "$LOCAL_LIGHT" ] && [ -f "$LOCAL_LIGHT" ]; then
-        echo "   * Using local light theme archive: $(basename "$LOCAL_LIGHT")"
-        cp "$LOCAL_LIGHT" "$TMP_DIR/light.tar.gz"
-    else
-        echo "   * Downloading Bibata-Material Light theme pack (v1.3.0)..."
-        if [ "$DOWNLOADER" = "curl" ]; then
-            curl -fL --progress-bar -o "$TMP_DIR/light.tar.gz" "$LIGHT_URL" || true
-        else
-            wget -q --show-progress -O "$TMP_DIR/light.tar.gz" "$LIGHT_URL" || true
-        fi
-    fi
+DARK_ARCHIVE="$THEME_CACHE_DIR/bibata-material-dark-v1.3.0.tar.gz"
+LIGHT_ARCHIVE="$THEME_CACHE_DIR/bibata-material-light-v1.3.0.tar.gz"
+DARK_URL="https://github.com/SakibShahariar/material-bibata-cursor/releases/download/v1.3.0/bibata-material-dark-v1.3.0.tar.gz"
+LIGHT_URL="https://github.com/SakibShahariar/material-bibata-cursor/releases/download/v1.3.0/bibata-material-light-v1.3.0.tar.gz"
 
-    if [ -f "$TMP_DIR/light.tar.gz" ] && [ -s "$TMP_DIR/light.tar.gz" ]; then
-        tar -xzf "$TMP_DIR/light.tar.gz" -C "$TMP_DIR"
-        cp -rn "$TMP_DIR"/bibata-material-light-*/Bibata-Material-* "$ICONS_DIR/" 2>/dev/null || true
-        cp -rn "$TMP_DIR"/bibata-material-light-*/Bibata-Material-* "$DATA_ICONS_DIR/" 2>/dev/null || true
-    else
-        echo "⚠️  Failed to acquire light theme pack. Check internet connection or download manually from:"
-        echo "   $LIGHT_URL"
-    fi
+LOCAL_DARK="$(find "$SCRIPT_DIR" -maxdepth 1 -name '*bibata-material-dark*.tar.gz' -print -quit 2>/dev/null || true)"
+LOCAL_LIGHT="$(find "$SCRIPT_DIR" -maxdepth 1 -name '*bibata-material-light*.tar.gz' -print -quit 2>/dev/null || true)"
 
-    rm -rf "$TMP_DIR"
+if [ -n "$LOCAL_DARK" ]; then
+    echo "   Using local dark archive: $(basename "$LOCAL_DARK")"
+    cp -f "$LOCAL_DARK" "$DARK_ARCHIVE"
+    record_checksum "$DARK_ARCHIVE"
+elif [ ! -s "$DARK_ARCHIVE" ]; then
+    echo "   Downloading Bibata-Material Dark pack (v1.3.0)..."
+    fetch_archive "$DARK_URL" "$DARK_ARCHIVE" && record_checksum "$DARK_ARCHIVE" \
+        || echo "   Warning: dark pack download failed."
 fi
 
-FOUND_NOW=$(find "$ICONS_DIR" -maxdepth 1 -name "Bibata-Material-*" 2>/dev/null | wc -l)
+if [ -n "$LOCAL_LIGHT" ]; then
+    echo "   Using local light archive: $(basename "$LOCAL_LIGHT")"
+    cp -f "$LOCAL_LIGHT" "$LIGHT_ARCHIVE"
+    record_checksum "$LIGHT_ARCHIVE"
+elif [ ! -s "$LIGHT_ARCHIVE" ]; then
+    echo "   Downloading Bibata-Material Light pack (v1.3.0)..."
+    fetch_archive "$LIGHT_URL" "$LIGHT_ARCHIVE" && record_checksum "$LIGHT_ARCHIVE" \
+        || echo "   Warning: light pack download failed."
+fi
+
+[ -s "$DARK_ARCHIVE" ] && install_archive "$DARK_ARCHIVE" || true
+[ -s "$LIGHT_ARCHIVE" ] && install_archive "$LIGHT_ARCHIVE" || true
+
+# Link themes into the XDG data dir instead of duplicating them.
+for theme_dir in "$ICONS_DIR"/Bibata-Material-*; do
+    [ -d "$theme_dir" ] || continue
+    name="$(basename "$theme_dir")"
+    target="$DATA_ICONS_DIR/$name"
+    if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+        ln -s "$theme_dir" "$target" 2>/dev/null || cp -a "$theme_dir" "$target"
+    fi
+done
+
+FOUND_NOW="$(find "$ICONS_DIR" -maxdepth 1 -name 'Bibata-Material-*' -type d 2>/dev/null | wc -l)"
 if [ "$FOUND_NOW" -lt 5 ]; then
-    echo "❌ Error: Could not locate installed Bibata-Material themes in $ICONS_DIR."
-    echo "   Please download the release archives from:"
-    echo "   https://github.com/SakibShahariar/material-bibata-cursor/releases"
-    echo "   and extract them into ~/.icons/ before running install.sh again."
+    echo "Error: could not locate installed Bibata-Material themes in $ICONS_DIR." >&2
+    echo "Download the release archives from:" >&2
+    echo "  https://github.com/SakibShahariar/material-bibata-cursor/releases" >&2
+    echo "and place them in $THEME_CACHE_DIR before retrying." >&2
     exit 1
 fi
-echo "   ✓ Themes ready: $FOUND_NOW themes installed in $ICONS_DIR"
+echo "   Themes ready: $FOUND_NOW themes installed in $ICONS_DIR"
+python3 "$SCRIPT_DIR/cursor_sync.py" --normalize >/dev/null 2>&1 || true
 
-# 3. Optimize theme storage (strip unused sizes and delete temporary archive directories)
-echo "-> Optimizing theme storage to ${CHOSEN_SIZE}px..."
-python3 "$SCRIPT_DIR/cursor_sync.py" --optimize "$CHOSEN_SIZE"
-
-# Save selected cursor size to plugin configuration and ensure Hyprland environment sync
-python3 -c "import sys; sys.path.insert(0, '$SCRIPT_DIR'); import cursor_sync; cfg = cursor_sync.load_plugin_config(); cfg['size'] = $CHOSEN_SIZE; cursor_sync.save_plugin_config(cfg); cursor_sync.ensure_hypr_env_lua()"
-
-# 4. Extract fixed notification icon (Bibata-Material-Noir-Light)
-if [ ! -f "$SCRIPT_DIR/assets/cursor_icon.png" ]; then
-    echo "-> Generating fixed notification icon (Bibata-Material-Noir-Light)..."
-    NOIR_HLC="$ICONS_DIR/Bibata-Material-Noir-Light/hyprcursors/left_ptr.hlc"
-    if [ -f "$NOIR_HLC" ]; then
-        unzip -p "$NOIR_HLC" left_ptr.svg > "$SCRIPT_DIR/assets/cursor_icon.svg" 2>/dev/null || true
-        if command -v rsvg-convert &>/dev/null; then
-            rsvg-convert -w 128 -h 128 "$SCRIPT_DIR/assets/cursor_icon.svg" -o "$SCRIPT_DIR/assets/cursor_icon.png" 2>/dev/null || true
-        elif command -v magick &>/dev/null; then
-            magick "$SCRIPT_DIR/assets/cursor_icon.svg" -resize 128x128 "$SCRIPT_DIR/assets/cursor_icon.png" 2>/dev/null || true
-        fi
-    fi
+# 3. Optional storage optimization -----------------------------------------
+if [ "$RUN_OPTIMIZE" -eq 1 ]; then
+    echo "-> Optimizing theme storage (reversible via --restore)..."
+    python3 "$SCRIPT_DIR/cursor_sync.py" --optimize "$CHOSEN_SIZE" \
+        || echo "   Warning: optimization skipped."
+else
+    echo "-> Keeping all cursor raster sizes (run --optimize to trim them later)."
 fi
-echo "   ✓ Notification icon configured."
 
-# 5. Configure postHooks in ~/.config/caelestia/cli.json
-echo "-> Configuring postHooks in Caelestia CLI ($CLI_CONF)..."
-SYNC_CMD="python3 $SCRIPT_DIR/cursor_sync.py"
+# 4. Persist config ---------------------------------------------------------
+python3 - "$SCRIPT_DIR" "$CHOSEN_SIZE" <<'PY'
+import sys
 
-python3 - <<EOF
-import json
-import os
+sys.path.insert(0, sys.argv[1])
+import cursor_sync
 
-cli_path = "$CLI_CONF"
-sync_cmd = "$SYNC_CMD"
+config = cursor_sync.load_config()
+config["size"] = int(sys.argv[2])
+cursor_sync.save_config(config)
+cursor_sync.ensure_hypr_env_lua()
+PY
 
-cfg = {}
-if os.path.exists(cli_path):
-    try:
-        with open(cli_path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-    except Exception:
-        cfg = {}
+# 5. Register Caelestia postHooks ------------------------------------------
+echo "-> Registering Caelestia postHooks in $CLI_CONF..."
+SYNC_CMD="python3 \"$SCRIPT_DIR/cursor_sync.py\""
 
-for section in ["theme", "wallpaper"]:
-    if section not in cfg:
-        cfg[section] = {}
-    curr_hook = cfg[section].get("postHook", "")
-    if sync_cmd not in curr_hook:
-        if curr_hook:
-            cfg[section]["postHook"] = f"{curr_hook}; {sync_cmd}"
-        else:
-            cfg[section]["postHook"] = sync_cmd
+python3 - "$SCRIPT_DIR" "$CLI_CONF" "$SYNC_CMD" <<'PY'
+import sys
 
-with open(cli_path, "w", encoding="utf-8") as f:
-    json.dump(cfg, f, indent=4)
+sys.path.insert(0, sys.argv[1])
+from fsutil import atomic_json_dump, atomic_json_load
 
-print("   ✓ Hooks registered in theme.postHook and wallpaper.postHook.")
-EOF
+cli_path, sync_cmd = sys.argv[2], sys.argv[3]
+config = atomic_json_load(cli_path, default={})
+if not isinstance(config, dict):
+    config = {}
 
-# 6. Link plugin in Caelestia plugins directory
-echo "-> Linking plugin to $PLUGINS_DIR..."
-rm -rf "$PLUGIN_TARGET"
-ln -sf "$SCRIPT_DIR" "$PLUGIN_TARGET"
-echo "   ✓ Link created: $PLUGIN_TARGET -> $SCRIPT_DIR"
+for section in ("theme", "wallpaper"):
+    section_config = config.setdefault(section, {})
+    current = str(section_config.get("postHook", ""))
+    if "cursor_sync.py" in current:
+        continue
+    section_config["postHook"] = f"{current}; {sync_cmd}" if current else sync_cmd
 
-# 7. Index wallpapers database and run initial sync
+atomic_json_dump(cli_path, config, indent=4)
+print("   Hooks registered in theme.postHook and wallpaper.postHook.")
+PY
+
+# 6. Remove the legacy inert integration symlink ---------------------------
+LEGACY_LINK="${XDG_DATA_HOME:-$HOME/.local/share}/caelestia/plugins/caelestia-material-cursor"
+if [ -L "$LEGACY_LINK" ]; then
+    rm -f "$LEGACY_LINK"
+    echo "   Removed legacy symlink: $LEGACY_LINK"
+fi
+
+# 7. Index wallpapers and run the initial sync -----------------------------
 echo "-> Pre-indexing wallpaper database..."
 python3 "$SCRIPT_DIR/cursor_sync.py" --scan
 
@@ -253,5 +298,5 @@ echo "-> Synchronizing initial cursor..."
 python3 "$SCRIPT_DIR/cursor_sync.py"
 
 echo "=========================================================="
-echo "    Installation Complete! Storage optimized & cursor synced."
+echo "    Installation complete. Cursor synced."
 echo "=========================================================="

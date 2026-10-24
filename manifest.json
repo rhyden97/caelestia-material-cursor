@@ -1,10 +1,10 @@
 {
-  "$schema": "https://raw.githubusercontent.com/caelestia-dots/plugins/main/schema.json",
   "id": "org.caelestia.material-cursor",
   "name": "Material Bibata Cursor Sync",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Caelestia Community",
-  "description": "Dynamically synchronizes cursor color and style with Material You wallpaper palettes",
+  "description": "Synchronizes cursor colour and style with the active Material You wallpaper palette",
+  "experimental": true,
   "entrypoints": {
     "hook": {
       "script": "cursor_sync.py",
@@ -15,17 +15,17 @@
     "enabled": {
       "type": "boolean",
       "default": true,
-      "description": "Enable automatic cursor synchronization with wallpaper"
+      "description": "Enable automatic cursor synchronization with the wallpaper"
     },
     "size": {
       "type": "integer",
       "default": 24,
-      "description": "Cursor size in pixels (e.g. 24, 28, 32, 48)"
+      "description": "Cursor size in pixels (16-96)"
     },
-    "notify": {
-      "type": "boolean",
-      "default": true,
-      "description": "Send notifications on wallpaper scans"
+    "overrideTheme": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Lock to a specific installed theme instead of matching the wallpaper"
     }
   }
 }

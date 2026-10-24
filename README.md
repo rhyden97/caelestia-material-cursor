@@ -1,160 +1,195 @@
 # Caelestia Material Cursor Sync (`caelestia-material-cursor`)
 
-Modular CLI plugin and synchronization backend for **Caelestia** (`caelestia-dots`) that dynamically synchronizes cursor theme, size, and accent colors with the active **Material You (M3)** wallpaper palette.
+CLI hook and synchronization backend for **Caelestia** (`caelestia-dots`) that keeps cursor theme, size and accent colour in sync with the active **Material You (M3)** wallpaper palette.
 
-Powered by all color variants from [SakibShahariar/material-bibata-cursor](https://github.com/SakibShahariar/material-bibata-cursor).
+Powered by all colour variants from [SakibShahariar/material-bibata-cursor](https://github.com/SakibShahariar/material-bibata-cursor).
 
 ---
 
 ## Features
 
-- **Sub-5ms Latency (Instant Cached Switching)**: Pre-indexes your wallpaper directory into a local persistent database (`~/.local/state/caelestia/wallpaper_cursors.json`). Changing wallpapers triggers an instantaneous $O(1)$ database lookup. If a new wallpaper is detected, it is extracted on the fly and cached automatically.
-- **Native Compositor Synchronization**: Integrates cleanly with Hyprland's runtime environment (`hl.env`), live cursor manager (`hyprctl setcursor`), GTK interface (`gsettings` & `dconf`), and Caelestia dotfiles (`hypr-vars.lua`), ensuring immediate and consistent cursor updates across all applications and the desktop.
-- **Intelligent Display Resolution & Scale Detection**: Automatically detects monitor dimensions and scaling factors (e.g., 4K UHD @ 2.0x, unscaled 1440p QHD, standard 1080p FHD), calculating and suggesting the optimal nominal cursor size (24px, 28px, 32px, 48px) to prevent microscopic or blurry cursors on HiDPI displays.
-- **Ultra-Lean Resource Footprint (~53 MB instead of ~1.7 GB)**: Features an automatic XCursor binary optimizer that strips unused nominal raster sizes, keeping vector **Hyprcursors** (resolution-independent crisp SVGs) for Wayland plus the optimal **24px** cursor size for legacy X11/GTK apps. Reduces theme storage by over **97%**.
-- **Intelligent Vibrant Color Extraction**: Employs an HSV-quantized 24-bin hue clustering algorithm on wallpaper thumbnails. Intelligently scores saturation and chromatic vibrancy $(\text{mean\_s}^{2.2} \times \text{max\_s}^{0.8} \times \text{mean\_v}^{0.5} \times \ln(1 + \text{count}))$ to extract punchy, prominent colors (e.g. glowing lava in a volcano, flowers, neon signs) rather than washed-out dark backgrounds or muted pastels.
-- **Perceptual CIEDE2000 Matching**: Uses the international CIELAB CIEDE2000 color difference formula with tuned $k_L = 2.0$ weighting to prioritize hue and chroma accuracy over relative luminance.
-- **Color Family Preservation (Dark ↔ Light)**: When switching between Dark and Light mode (or vice-versa), the active color family (e.g., `Teal`, `Soft-Blue`, `Pink-Pastel`) is preserved, cleanly toggling only the `-Light` suffix without jumping to different color tones.
-- **Full Animated Wallpaper Support**: Directly supports `.mp4`, `.webm`, and `.mkv` live wallpapers in `~/Pictures/Wallpapers/Animated/`, utilizing Quickshell's `djb2` thumbnail cache and `ffmpeg`.
-- **Silent & Non-Intrusive Background Changes**: Wallpaper changes execute silently in the background without notification popups.
-- **Dedicated Batch Indexing Notification**: When rescanning or pre-indexing wallpapers, a clean desktop notification is sent using a high-resolution, centered **`Bibata-Material-Noir-Light`** cursor pointer icon.
-- 🔄 **Comprehensive System Synchronization**:
-  - **Hyprland (Wayland)**: Live compositor reload via `hyprctl setcursor` and runtime `hl.env`.
-  - **GTK & Applications**: Real-time GSettings & dconf sync (`org.gnome.desktop.interface cursor-theme`).
-  - **Reboot Persistence**: Writes settings directly to `~/.config/caelestia/hypr-vars.lua` (`cursorTheme` and `cursorSize`).
-  - **X11 / Legacy Fallback**: Updates `~/.icons/default/index.theme` and `~/.local/share/icons/default/index.theme`.
-  - **Dual Caelestia Hooks**: Registered in both `theme.postHook` and `wallpaper.postHook` in `~/.config/caelestia/cli.json`.
+- **Fast cached switching**: pre-indexes your wallpaper directory into a persistent database (`~/.local/state/caelestia/wallpaper_cursors.json`). A wallpaper change is an O(1) lookup; new or modified files are extracted on demand and cached.
+- **Correct cache invalidation**: entries store both `mtime` and file size, so replacing a wallpaper in place (same path) is detected.
+- **Native compositor sync**: updates Hyprland at runtime (`hyprctl setcursor`), persists `cursorTheme`/`cursorSize` in `~/.config/caelestia/hypr-vars.lua`, and keeps `HYPRCURSOR_*`/`XCURSOR_*` in `~/.config/hypr/hyprland/env.lua`.
+- **GTK/X11 fallbacks**: `gsettings` (or `dconf` when GSettings is unavailable), `~/.icons/default/index.theme` and a Hyprcursor `manifest.hl`.
+- **Display-aware sizing**: detects monitor resolution and scale, then suggests 24/28/32/48 px. On HiDPI it keeps the nominal size **and** its physical twin when optimizing.
+- **Reversible optimization**: strips unused XCursor raster sizes, keeps vector Hyprcursors, and preserves the release archives so `--restore` can bring back every original size.
+- **Vibrant colour extraction**: 24-bin HSV hue clustering on a downscaled thumbnail. Scores saturation and vibrancy (`mean_s^2.2 × max_s^0.8 × mean_v^0.5 × ln(1 + count)`) so glowing lava, flowers or neon signs win over muted backgrounds.
+- **Perceptual matching**: CIEDE2000 in CIELAB with `kL = 2.0`, prioritising hue and chroma over lightness.
+- **Colour-family preservation**: toggling Dark ↔ Light keeps the active family (for example `Teal` or `Soft-Blue`) and only switches the `-Light` suffix.
+- **Animated wallpapers**: supports `.mp4`, `.webm` and `.mkv` using Quickshell's `djb2` thumbnail cache (UTF-16 semantics, matching JS `charCodeAt`) and `ffmpeg`.
+- **Silent by design**: no desktop popups or sound during wallpaper/theme changes.
+- **Atomic state**: every JSON/Lua write uses a same-directory temp file plus `os.replace`, so concurrent hooks cannot truncate config or state.
+- **Safe by default**: theme names and sizes are validated before touching Hyprland, GSettings or Lua files.
 
 ---
 
-## Directory Structure & Footprint
-
-The repository is ultra-lean (~390 KB) and does not store heavy compiled binaries in git:
+## Directory structure
 
 ```
-caelestia-material-cursor/          # Total repo size: ~390 KB
-├── manifest.json                   # Caelestia Plugin manifest (headless hook)
-├── themes.json                     # Color definitions for all 57 Bibata themes
-├── color_match.py                  # CIEDE2000 Delta-E & vibrant extraction engine
-├── cursor_sync.py                  # Core synchronization CLI & database scanner
-├── install.sh                      # Automated installer and setup script
-├── requirements.txt                # Python dependencies (Pillow)
-├── LICENSE                         # MIT License
-├── assets/                         # Notification pointer icons
-│   ├── cursor_icon.svg             # Clean SVG vector (Noir-Light pointer)
-│   └── cursor_icon.png             # 128x128 High-DPI rendered PNG
-└── README.md                       # Documentation
+caelestia-material-cursor/
+├── cursor_sync.py       # Core sync CLI, cache, optimizer and restore
+├── color_match.py       # CIEDE2000 + vibrant colour extraction
+├── fsutil.py            # Atomic write / JSON helpers
+├── themes.json          # 29 colour families (28 + Classic) used for matching
+├── install.sh           # Installer and hook registration
+├── uninstall.sh         # Hook removal and optional purge
+├── manifest.json        # Experimental integration metadata
+├── requirements.txt     # Python dependencies (Pillow)
+├── tests/               # pytest suite
+├── pyproject.toml       # ruff + pytest configuration
+├── LICENSE              # MIT
+└── README.md
 ```
 
-- **Repository Footprint**: ~390 KB (pure source code, no bloated blobs in Git)
-- **Pre-computed Database**: ~83 KB (`~/.local/state/caelestia/wallpaper_cursors.json`)
-- **Installed Cursor Themes**: **~53 MB total** across all 57 themes in `~/.icons/` (optimized on installation)
+- **Repository footprint**: ~110 KB of source (no compiled cursor blobs).
+- **Pre-computed database**: ~83 KB.
+- **Installed themes**: 57 directories. The installer keeps one real copy in `~/.icons` and links it from `~/.local/share/icons`. With the default optimization (24 + 48 px retained) the set is ~111 MB logical (~131 MB on disk); keeping a single raster size is ~30 MB. Older installs with two real copies can be fixed with `--dedupe`.
 
 ---
 
-## Prerequisites & Dependencies
+## Prerequisites
 
-### System Packages
-Ensure Python 3, Hyprland, and standard utilities are installed:
+### System packages
 
 - **Arch Linux / CachyOS**:
   ```bash
   sudo pacman -S python python-pillow hyprland curl tar
-  # Optional (recommended for animated wallpapers & vector icon rendering):
-  sudo pacman -S ffmpeg librsvg
+  # Optional (animated wallpapers):
+  sudo pacman -S ffmpeg
   ```
 - **Fedora**:
   ```bash
-  sudo dnf install python3 python3-pillow hyprland curl tar ffmpeg librsvg2-tools
+  sudo dnf install python3 python3-pillow hyprland curl tar ffmpeg
   ```
 - **Debian / Ubuntu**:
   ```bash
-  sudo apt install python3 python3-pil hyprland curl tar ffmpeg librsvg2-bin
+  sudo apt install python3 python3-pil hyprland curl tar ffmpeg
   ```
 
-### Python Dependencies
-The color engine uses pure-Python CIEDE2000 algorithms and only requires `Pillow`:
+### Python dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install --user -r requirements.txt
 ```
+
+Only `Pillow >= 9.1` is required at runtime, and it is imported lazily (only when a colour actually needs extraction).
 
 ---
 
-## Quick Installation
-
-Run the automated installer from the repository root:
+## Installation
 
 ```bash
 chmod +x install.sh
-./install.sh
+./install.sh          # interactive size selection
+./install.sh -y       # accept the recommended size
+./install.sh --optimize   # also strip unused raster sizes (reversible)
 ```
 
-*(You can also pass `./install.sh -y` to auto-accept the recommended cursor size).*
+### What `install.sh` does
 
-### What `install.sh` does:
-1. **Validates Dependencies**: Verifies Python 3, Pillow, curl/wget, and tar before proceeding.
-2. **Detects Display & Optimal Size**: Queries `cursor_sync.py --detect-size` and presents an intelligent size recommendation based on your display resolution and scaling factor.
-3. **Dynamic Cursor Theme Download**: Automatically downloads the official [SakibShahariar/material-bibata-cursor v1.3.0](https://github.com/SakibShahariar/material-bibata-cursor/releases) packages on-demand, or uses local archives if placed in the folder.
-4. **Optimizes Theme Storage**: Trims unused nominal sizes to preserve disk space (~53 MB instead of 1.7 GB).
-5. **Configures Notification Icon**: Sets up the centered `Bibata-Material-Noir-Light` icon.
-6. **Registers Caelestia postHooks**: Connects `cursor_sync.py` to `theme.postHook` and `wallpaper.postHook` in `~/.config/caelestia/cli.json`.
-7. **Links Plugin**: Symlinks to `~/.local/share/caelestia/plugins/caelestia-material-cursor`.
-8. **Pre-indexes Database & Syncs**: Scans wallpapers in parallel and synchronizes the cursor immediately.
+1. Validates Python 3, Pillow, `curl`/`wget` and `tar`.
+2. Detects monitor resolution/scale and recommends a cursor size.
+3. Downloads the official [SakibShahariar/material-bibata-cursor v1.3.0](https://github.com/SakibShahariar/material-bibata-cursor/releases) archives, or reuses local ones. Archives are kept in `~/.cache/caelestia/cursor-themes/` with a SHA-256 sidecar.
+4. Extracts themes into `~/.icons` and links them from `~/.local/share/icons`.
+5. Optionally optimizes storage (`--optimize`); by default all raster sizes are preserved.
+6. Saves the chosen size to `~/.config/caelestia/cursor.json`.
+7. Registers `cursor_sync.py` in both `theme.postHook` and `wallpaper.postHook` of `~/.config/caelestia/cli.json`.
+8. Pre-indexes wallpapers and applies the cursor once.
+
+> The integration is a **CLI hook**, not a shell component: Caelestia runs it through the `cli.json` postHooks. `manifest.json` is kept only as experimental metadata for a future loader.
 
 ---
 
-## CLI Commands Reference
-
-All management is handled via the command line:
+## CLI reference
 
 ```bash
-# Perform an immediate cursor sync with current active wallpaper & scheme
+# Sync now with the active wallpaper and scheme
 python3 cursor_sync.py
 
-# Rescan and pre-index all wallpapers in ~/Pictures/Wallpapers in parallel
+# Rescan wallpapers (parallel); --prune drops entries for deleted files
 python3 cursor_sync.py --scan
+python3 cursor_sync.py --scan --prune
 
-# Detect monitor resolution & scale, and display recommended cursor sizes
+# Detect display and print recommended sizes
 python3 cursor_sync.py --detect-size
 
-# Optimize cursor theme storage (strips unused sizes, auto-detects optimal size if omitted)
-python3 cursor_sync.py --optimize [SIZE]
+# Strip unused raster sizes (keeps size and its HiDPI twin)
+python3 cursor_sync.py --optimize
+python3 cursor_sync.py --optimize 32
+python3 cursor_sync.py --optimize 32 --force   # without cached archives
 
-# View comprehensive status (display info, active cursor, disk usage, and cache count)
+# Restore themes from the cached release archives
+python3 cursor_sync.py --restore
+python3 cursor_sync.py --restore Bibata-Material-Soft-Blue
+
+# Replace duplicate data-dir copies with symlinks
+python3 cursor_sync.py --dedupe
+
+# Fix Hyprcursor manifest names to match theme directories
+python3 cursor_sync.py --normalize
+
+# Full status (display, active cursor, size source, storage, cache health)
 python3 cursor_sync.py --status
 
-# Toggle automatic synchronization on / off
+# Enable/disable automatic synchronization
 python3 cursor_sync.py --toggle
 
-# Force color re-extraction ignoring the database cache
+# Force colour re-extraction, ignoring the cache
 python3 cursor_sync.py --recalc
-
-# Show available CLI options
-python3 cursor_sync.py --help
 ```
 
 ---
 
-## Configuration (`~/.config/caelestia/cursor_plugin.json`)
+## Configuration (`~/.config/caelestia/cursor.json`)
 
 ```json
 {
   "enabled": true,
   "size": 24,
-  "notify": true,
   "overrideTheme": null
 }
 ```
 
-- `enabled` (*bool*): Enables or pauses automatic synchronization.
-- `size` (*int*): Cursor size in pixels (`24`, `28`, `32`, `36`, `48`).
-- `notify` (*bool*): Enables desktop notifications on batch `--scan` operations.
-- `overrideTheme` (*string | null*): Manually lock to a specific theme (e.g. `"Bibata-Material-Sky-Blue"`). Set to `null` for dynamic matching.
+- `enabled` (*bool*): pause automatic synchronization.
+- `size` (*int*, 16–96): cursor size in pixels.
+- `overrideTheme` (*string | null*): lock to a specific installed theme (for example `"Bibata-Material-Sky-Blue"`). Invalid or missing themes are rejected without changing the current cursor.
+
+A legacy config filename is still read as a fallback when `cursor.json` does not exist.
+
+### Size precedence
+
+1. `size` in `cursor.json`.
+2. `cursorSize` in `~/.config/caelestia/hypr-vars.lua`.
+3. Auto-detected recommendation.
+
+`--status` reports which source is active (`config`, `hypr-vars` or `auto`).
+
+---
+
+## Storage optimization and restore
+
+`--optimize` keeps the nominal size plus its physical HiDPI twin (for example `{24, 48}` on a 2× display), writes each XCursor atomically and keeps the original archives in `~/.cache/caelestia/cursor-themes/`. Duplicate extraction folders are moved to `.../cursor-themes/trash/` instead of being deleted.
+
+If no archive is available, `--optimize` refuses to run unless `--force` is passed. To recover the full set of sizes at any time:
+
+```bash
+python3 cursor_sync.py --restore
+```
+
+---
+
+## Troubleshooting
+
+- **Cursor does not change**: check `python3 cursor_sync.py --status`, confirm the theme exists in `~/.icons`, and verify the hooks in `~/.config/caelestia/cli.json`.
+- **Blurry cursor on HiDPI**: run `python3 cursor_sync.py --optimize` and make sure the size kept matches `cursorSize`; `--status` shows the active size and its source.
+- **Wrong colour after changing wallpaper**: run `python3 cursor_sync.py --recalc`; the cache is keyed by path, `mtime` and size.
+- **Two copies of every theme**: run `python3 cursor_sync.py --dedupe`.
+- **Start from scratch**: `./uninstall.sh --purge` (add `--themes` to remove the cursor themes too).
 
 ---
 
 ## License
 
-Distributed under the [MIT License](LICENSE).  
-Themes based on [SakibShahariar/material-bibata-cursor](https://github.com/SakibShahariar/material-bibata-cursor) (GPL-3.0).
+Distributed under the [MIT License](LICENSE).
+Themes are based on [SakibShahariar/material-bibata-cursor](https://github.com/SakibShahariar/material-bibata-cursor) (GPL-3.0) and are downloaded at install time; they are not redistributed in this repository.
